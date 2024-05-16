@@ -1,0 +1,88 @@
+# This workflow will be triggered on every PR on the main branch
+# Note : if the asyncapi file is not present, the job is canceled
+
+# To get started, configure the following in your repos secrets https://docs.github.com/en/actions/security-guides/encrypted-secrets
+# SOLACE_CLOUD_TOKEN: Solace Cloud Token
+
+name: Config Push Preview
+on:
+  pull_request: 
+    branches: [ main ]
+
+env: 
+  EVENT_MESH_NAME: us-central-solace-Prod
+  PREVIEW_ONLY: TRUE
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        
+      - name: Get asyncapi file in the commit
+        id: changed_files
+        uses: tj-actions/changed-files@v40
+        with:
+          files: | 
+            asyncapi*
+      
+      - name: Read asyncapi content
+        id: asyncapi
+        run: |
+          for file in ${{ steps.changed_files.outputs.all_changed_files }}; do
+            if [[ ( ${file} == *.yaml ) || ( ${file} == *.yml ) || ( ${file} == *.json ) ]]
+            then
+              echo 'asyncFile<<EOF' >> $GITHUB_OUTPUT
+              echo $(cat $file) >> $GITHUB_OUTPUT
+              echo 'EOF' >> $GITHUB_OUTPUT
+            fi
+          done
+      
+      - name: Extract Application Version ID from asyncapiFile
+        if: ${{ steps.asyncapi.outputs.asyncFile }}
+        uses: tmelliottjr/extract-regex-action@v1.4.0
+        id: epApplicationVersionId
+        with:
+          regex: '(?<=x-ep-application-version-id\\": \\")(.*?)(?=\\")' 
+          flags: "gm"
+          input: ${{steps.asyncapi.outputs.asyncFile}}
+
+      - name: Generate Preview Application Version Deployment Plan
+        if: ${{ steps.epApplicationVersionId.outputs.resultString }}
+        id: plan
+        uses: SolaceDev/solace-ep-config-push@v0.1.0
+        with:
+          SOLACE_CLOUD_TOKEN: ${{ secrets.SOLACE_CLOUD_TOKEN }}
+          APPLICATION_VERSION_ID: ${{ steps.epApplicationVersionId.outputs.resultString }}
+          EVENT_MESH_NAME: ${{ env.EVENT_MESH_NAME }}
+          PREVIEW_ONLY: ${{ env.PREVIEW_ONLY }}
+
+      - name: PR Comment with Deployment Preview
+        uses: actions/github-script@v6
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: "${{ steps.plan.outputs.deployment_plan }}"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // 1. Prepare format of the comment
+            const output = `#### Application Deployment Plan 📖\`${{ steps.plan.outcome }}\`
+      
+            <details><summary>Show Plan</summary>
+      
+            \`\`\`\n
+            ${process.env.PLAN}
+            \`\`\`
+      
+            </details>
+      
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\` *`;
+            
+            // 2. Create PR comment with the deployment plan
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })

@@ -1,0 +1,56 @@
+# This workflow will be triggered on every merge on the main branch
+# Note : if the asyncapi file is not present, the job is canceled
+
+# To get started, configure the following in your repos secrets https://docs.github.com/en/actions/security-guides/encrypted-secrets
+# SOLACE_CLOUD_TOKEN: Solace Cloud Token
+
+name: Config Push Deploy
+on:
+  push: 
+    branches: [ main ]
+
+env:
+  EVENT_MESH_NAME: us-central-solace-Prod
+  
+jobs:
+  config-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        
+      - name: Get asyncapi file in the commit
+        id: changed_files
+        uses: tj-actions/changed-files@v40
+        with:
+          files: | 
+            asyncapi*
+      
+      - name: Read asyncapi content
+        id: asyncapi
+        run: |
+          for file in ${{ steps.changed_files.outputs.all_changed_files }}; do
+            if [[ ( ${file} == *.yaml ) || ( ${file} == *.yml ) || ( ${file} == *.json ) ]]
+            then
+              echo 'asyncFile<<EOF' >> $GITHUB_OUTPUT
+              echo $(cat $file) >> $GITHUB_OUTPUT
+              echo 'EOF' >> $GITHUB_OUTPUT
+            fi
+          done
+      
+      - name: Extract Application Version ID from asyncapiFile
+        if: ${{ steps.asyncapi.outputs.asyncFile }}
+        uses: tmelliottjr/extract-regex-action@v1.4.0
+        id: epApplicationVersionId
+        with:
+          regex: '(?<=x-ep-application-version-id\\": \\")(.*?)(?=\\")' 
+          flags: "gm"
+          input: ${{steps.asyncapi.outputs.asyncFile}}
+
+      - name: Promote Application Version
+        if: ${{ steps.epApplicationVersionId.outputs.resultString }}
+        uses: SolaceDev/solace-ep-config-push@v0.1.0
+        with:
+          SOLACE_CLOUD_TOKEN: ${{ secrets.SOLACE_CLOUD_TOKEN }}
+          APPLICATION_VERSION_ID: ${{ steps.epApplicationVersionId.outputs.resultString }}
+          EVENT_MESH_NAME: ${{ env.EVENT_MESH_NAME }}
